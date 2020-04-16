@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python3.8
 
 import argparse
 import platform
@@ -95,22 +95,17 @@ class LayerFS(Operations):
     # Returns path to use following these rules
     # force_fake will copy over real files if needed
     # Note: ancestors are not promised to have the proper permissions
-    @debug_member
     def path(self, partial, *, force_fake):
         use_fake = self.test_use_fake(partial)
         if use_fake is False and force_fake is True:
             path = self.fake_path(partial)
             Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
-            # TODO: replace with copy function that only copies new stuff
-            # i.e. copy('b/a') then copy('b') should work
-            # Consider the ignore= argument of copytree with a custom function
-            # that ignores anything test_use_fake() returns True one
             real_path = self.real_path(partial)
-            print(3)
             if os.path.exists(real_path):
-                copy_fn = shutil.copytree if os.path.isdir(real_path) else shutil.copy2
-                copy_fn(real_path, path)
-            print(4)
+                if os.path.isdir(real_path):
+                    shutil.copytree(real_path, path, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(real_path, path)
             self.shadow.add(partial)
             return path
         return self.fake_path(partial) if use_fake else self.real_path(partial)
@@ -152,6 +147,7 @@ class LayerFS(Operations):
     # Filesystem methods
     # ==================
 
+    @debug_member
     def access(self, partial, mode):
         path = self.path(partial, force_fake=False)
         self.fassert(os.access(path, mode), errno.EACCES)
@@ -171,6 +167,7 @@ class LayerFS(Operations):
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                 'st_mtime', 'st_uid', 'st_gid', 'st_mode', 'st_size', 'st_nlink'))
 
+    @debug_member
     def readdir(self, partial, fh):
         dirents = self.ls_dir(partial)
         for i in ([ '.', '..' ] + dirents):
@@ -188,9 +185,12 @@ class LayerFS(Operations):
         os.mknod(path, mode, dev)
 
     # TODO: parent permissions
+    @debug_member
     def rmdir(self, partial):
         path = self.path(partial, force_fake=True)
-        os.rmdir(path)
+        print('rmdir: |'+ path + '|')
+        os.rmdir(path) # This is not working! It silently fails but changes psuedo-persist in this function!
+        print('Done? ', not os.path.exists(path)) # TODO: Yet this lies somehow!
 
     # TODO: parent permissions
     def mkdir(self, partial, mode):
