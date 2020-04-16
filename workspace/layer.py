@@ -8,6 +8,7 @@ import sys
 import os
 
 from pathlib import Path
+from collections import namedtuple
 from fuse import FUSE, FuseOSError, Operations
 
 
@@ -50,6 +51,7 @@ class LayerFS(Operations):
         Path(self.fake_root).mkdir(parents=True, exist_ok=True)
         # TODO: make persistant on disk via import shelve
         # Place in something like layer_storage/shadow
+        self.fd_map_t = namedtuple('fd', 'path', 'open_args')
         self.shadow = set()
         self.fd_map = {}
         self.root = root
@@ -109,6 +111,22 @@ class LayerFS(Operations):
         if not b:
             raise FuseOSError(ec)
 
+    def add_to_fd_map(self, path, fd, *open_args):
+        fake_fd = 0
+        while fake_fd in self.fd_map:
+            fake_fd += 1
+        self.fd_map[fake_fd] = self.fd_map_t(fd, path, open_args)
+        return fake_fd
+
+    def real_fd(self, fh, path):
+        entry = self.fd_map[fh]
+        if entry.path == path:
+            return entry.fd
+        os.close(entry.fd)
+        fd = os.open(entry.path, *entry.open_args)
+        self.fd_map[fh].fd = fd
+        return fd
+
     # TODO
     def ls_dir(self, partial):
         pass
@@ -133,6 +151,7 @@ class LayerFS(Operations):
             dirents = set(fake_exist) | set(real_exist)
         return dirents - set([self.dir_representation_name])
         '''
+
 
     # Filesystem methods
     # ==================
@@ -217,44 +236,45 @@ class LayerFS(Operations):
     # File methods
     # ============
 
-    # Verify the file can be opened
-    # To force sync's it is faster to use path for everything
-    # TODO
     def open(self, partial, flags):
-        # TODO: double check
         req_write = [ os.O_WRONLY, os.O_RDWR, os.O_CREAT, os.O_APPEND, os.O_TRUNC, os.O_EXCL ]
         write_access = any([ flags == (flags | i) for i in req_write ])
         path = self.path(partial, force_fake=write_access)
         fd = os.open(path, flags)
-        # TODO: map fd to fake_fd so that fd can be change if path updates, then return fd
+        return self.add_to_fd_map(path, fd)
 
-    # TODO
-    def create(self, path, mode, fi=None):
+    def create(self, partial, mode, fi=None):
+        path = self.path(partial, force_fake=True)
+        fd = os.open(full_path, os.O_WRONLY | os.O_CREAT, mode)
+        return self.add_to_fd_map(path, fd)
+
+    def read(self, partial, length, offset, fh):
+        path = self.path(partial, force_fake=False)
+        fd = self.real_fd(fh, path)
+        return os.read(fd, length)
+
+    def write(self, partial, buf, offset, fh):
+        path = self.path(partial, force_fake=True)
+        fd = self.real_fd(fh, path)
+        os.lseek(fd, offset, os.SEEK_SET)
+        return os.write(fd, buf)
+
+    def truncate(self, partial, length, fh=None):
+        path = self.path(partial, force_fake=True)
+        with open(path, 'r+') as f:
+            f.truncate(length)
+
+    def flush(self, partial, fh):
         pass
 
-    # TODO
-    def read(self, path, length, offset, fh):
-        pass
+    def release(self, partial, fh):
+        fd = self.fd_map.pop(fh)
+        os.close(fd)
 
-    # TODO
-    def write(self, path, buf, offset, fh):
-        pass
-
-    # TODO
-    def truncate(self, path, length, fh=None):
-        pass
-
-    # TODO
-    def flush(self, path, fh):
-        pass
-
-    # TODO
-    def release(self, path, fh):
-        del self.fd_map[fh]
-
-    # TODO
-    def fsync(self, path, fdatasync, fh):
-        pass
+    def fsync(self, partial, fdatasync, fh):
+        path = self.path(partial, force_fake=True)
+        fd = self.real_fd(fh, path)
+        os.fsync(fd)
 
 
 def layerFS(src, layer_storage, dst, **kwargs):
@@ -282,6 +302,7 @@ def main(argv):
     assert platform.system() == 'Darwin', 'Only OSX is currently supported'
     ns = parse_args(*argv)
     return layerFS(**vars(ns))
+
 
 # Don't run on import
 if __name__ == '__main__':
