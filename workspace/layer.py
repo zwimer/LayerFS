@@ -127,31 +127,18 @@ class LayerFS(Operations):
         self.fd_map[fh].fd = fd
         return fd
 
-    # TODO
     def ls_dir(self, partial):
-        pass
-        '''
-        fake_path, fake_adjusted = self.fake_path(path, is_dir=True)
-        # If the dir is fake itself
-        if os.path.exists(fake_adjusted):
-            self.fassert(not self.removed(fake_path), errno.ENOENT)
-            dirents = set(os.listdir(fake_path))
-        # If the dir itself has no fake analog
+        fake_path = self.fake_path(partial)
+        path = self.path(partial, force_fake=False)
+        if fake_path == path:
+            return os.listdir(path)
         else:
-            real_path = self.real_path(path)
-            self.fassert(os.path.exists(real_path), errno.ENOENT)
-            # Find real and fake
-            real_files = os.listdir(real_path) if os.path.isdir(real_path) else []
-            fake_files = { i:self.removed(self.join(fake_path, i)) for i in os.listdir(fake_path) }
-            # Categorize
-            fake_exist = [ i for i,k in fake_files.items() if not k ]
-            fake_removed = [ i for i,k in fake_files.items() if k ]
-            real_exist = [ i for i in real_files if i not in fake_removed ]
-            # Finalize
-            dirents = set(fake_exist) | set(real_exist)
-        return dirents - set([self.dir_representation_name])
-        '''
-
+            self.fassert(os.path.exists(path), errno.ENOENT)
+            self.fassert(os.path.isdir(path), errno.ENOTDIR)
+            real_partials = [ self.join(partial, i) for i in os.listdir(path) ]
+            real_files = [ self.path(i, force_fake=False) for i in real_partials ]
+            fake_files = [ i for i in self.shadow if os.path.dirname(i) == fake_path ]
+            return [ os.path.basename(i) for i in (real_files + fake_files) if os.path.exists(i) ]
 
     # Filesystem methods
     # ==================
@@ -178,9 +165,7 @@ class LayerFS(Operations):
 
     def readdir(self, partial, fh):
         dirents = self.ls_dir(partial)
-        yield '.'
-        yield '..'
-        for i in dirents:
+        for i in ([ '.', '..' ] + dirents):
             yield i
 
     def readlink(self, path):
