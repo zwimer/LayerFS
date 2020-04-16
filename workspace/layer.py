@@ -95,6 +95,7 @@ class LayerFS(Operations):
     # Returns path to use following these rules
     # force_fake will copy over real files if needed
     # Note: ancestors are not promised to have the proper permissions
+    @debug_member
     def path(self, partial, *, force_fake):
         use_fake = self.test_use_fake(partial)
         if use_fake is False and force_fake is True:
@@ -105,8 +106,11 @@ class LayerFS(Operations):
             # Consider the ignore= argument of copytree with a custom function
             # that ignores anything test_use_fake() returns True one
             real_path = self.real_path(partial)
+            print(3)
             if os.path.exists(real_path):
-                shutil.copytree(real_path, path)
+                copy_fn = shutil.copytree if os.path.isdir(real_path) else shutil.copy2
+                copy_fn(real_path, path)
+            print(4)
             self.shadow.add(partial)
             return path
         return self.fake_path(partial) if use_fake else self.real_path(partial)
@@ -201,6 +205,7 @@ class LayerFS(Operations):
             'f_frsize', 'f_namemax'))
 
     # TODO: parent permissions
+    @debug_member
     def unlink(self, partial):
         path = self.path(partial, force_fake=True)
         os.unlink(path)
