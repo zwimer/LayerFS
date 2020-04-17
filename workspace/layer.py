@@ -42,7 +42,7 @@ class LayerFS(Operations):
         # Make directories
         Path(layer_storage).mkdir(parents=False, exist_ok=True)
         self.fake_root = self.join(layer_storage, 'fake_root')
-        Path(self.fake_root).mkdir(parents=True, exist_ok=True) # TODO: handle case where / is edited
+        Path(self.fake_root).mkdir(parents=True, exist_ok=True)
         # Setup LayerFS
         self.fd_map_t = namedtuple('fd_map_t', ['fd', 'path', 'open_args'])
         self.shadow_file = self.join(layer_storage, 'shadow')
