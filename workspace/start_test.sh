@@ -28,4 +28,4 @@ echo 'Hello World' > src/f
 # Pass through other options
 echo 'Consider --debug'
 set -x
-./layer.py src persist mnt "$@"
+./LayerFS.py src persist mnt "$@"
