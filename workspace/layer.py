@@ -21,33 +21,16 @@ from fuse import FUSE, FuseOSError, Operations
 
 # A decorator used for debugging
 def debug_member(f):
-    debug=not False
-    pnt = print if debug else lambda x : None
     def real(*args, **kwargs):
-        global ll
-        pnt('  '*ll + 'Invoked ' + f.__name__ + ':', args[1:], kwargs)
-        ll += 1
-        try:
-            ret = f(*args,  **kwargs)
-        except Exception as e:
-            pnt('Exception: ' + str(e))
-            raise
-        finally:
-            ll -= 1
-        pnt('  '*ll+'Returned: ', ret)
-        if ll == 0: pnt()
+        global ll; ll += 1
+        print('  '*ll + 'Invoked ' + f.__name__ + ':', args[1:], kwargs)
+        try: ret = f(*args,  **kwargs)
+        except Exception as e: pnt('Exception: ' + str(e)); raise
+        finally: ll -= 1
+        print('  '*ll+'Returned: ' + ('\n' if ll==0 else ''), ret)
         return ret
     return real
 ll = 0
-
-# Decorate a class
-def for_all_methods(decorator):
-    def decorate(cls):
-        for attr in cls.__dict__: # there's propably a better way to do this
-            if callable(getattr(cls, attr)):
-                setattr(cls, attr, decorator(getattr(cls, attr)))
-        return cls
-    return decorate
 
 
 # The class that handles all FS / File operations
@@ -67,17 +50,19 @@ class LayerFS(Operations):
         self.fd_map = {}
         self.root = root
 
-    # Helpers
-    # ==================
+    ######################################################################
+    #                                                                    #
+    #                          Helper Functions                          #
+    #                                                                    #
+    ######################################################################
 
-    def update_shadow(self, partial):
-        self.shadow.add(partial)
-        with open(self.shadow_file, 'a') as f:
-            f.write(partial + '\n')
+    ########################################
+    #      Path Construction Functions     #
+    ########################################
 
     # Never end in slash
-    # TODO: @staticmethod
-    def join(self, a_root, tail):
+    @staticmethod
+    def join(a_root, tail):
         while tail.startswith('/'):
             tail = tail[1:]
         ret = os.path.join(a_root, tail)
@@ -93,6 +78,16 @@ class LayerFS(Operations):
     def fake_path(self, partial):
         return self.join(self.fake_root, partial)
 
+    ########################################
+    #           Shadow Functions           #
+    ########################################
+
+    # Add something to shadow (the fake paths to be used)
+    def add_to_shadow(self, partial):
+        self.shadow.add(partial)
+        with open(self.shadow_file, 'a') as f:
+            f.write(partial + '\n')
+
     # Determine if the real or fake paths should be used
     def test_use_fake(self, partial):
         if partial in self.shadow:
@@ -102,13 +97,14 @@ class LayerFS(Operations):
         else:
             return self.test_use_fake(os.path.dirname(partial))
 
+    ########################################
+    #       Path Selection Functions       #
+    ########################################
+
     # Used for copytree to ignore already fake sub-items
     def ignore_fake(self, d, children):
         assert d.startswith(self.root), 'sanity check'
         prepend = d[len(self.root):]
-        print(d, children)
-        print([ i for i in children if self.test_use_fake(self.join(prepend, i)) ])
-        print('\n'*10)
         return [ i for i in children if self.test_use_fake(self.join(prepend, i)) ]
 
     # Returns path to use following these rules
@@ -125,15 +121,15 @@ class LayerFS(Operations):
                     shutil.copytree(real_path, path, ignore=self.ignore_fake, dirs_exist_ok=True)
                 else:
                     shutil.copy2(real_path, path)
-            self.update_shadow(partial)
+            self.add_to_shadow(partial)
             return path
         return self.fake_path(partial) if use_fake else self.real_path(partial)
 
-    # TODO: @staticmethod
-    def fassert(self, b, ec):
-        if not b:
-            raise FuseOSError(ec)
+    ########################################
+    #             fd Functions             #
+    ########################################
 
+    # Add an OS fd to the fdmap, return the LayerFS fd
     def add_to_fd_map(self, path, fd, *open_args):
         fake_fd = 0
         while fake_fd in self.fd_map:
@@ -141,6 +137,8 @@ class LayerFS(Operations):
         self.fd_map[fake_fd] = self.fd_map_t(fd, path, open_args)
         return fake_fd
 
+    # Translate a LayerFS fs to an OS fd
+    # Will update the OS fd if needed
     def real_fd(self, fh, path):
         entry = self.fd_map[fh]
         if entry.path == path:
@@ -150,6 +148,17 @@ class LayerFS(Operations):
         self.fd_map[fh].fd = fd
         return fd
 
+    ########################################
+    #            Misc Functions            #
+    ########################################
+
+    @staticmethod
+    def fassert(b, ec):
+        if not b:
+            raise FuseOSError(ec)
+
+    # Return the directory entries of partial
+    # Does not include '.' or '..'
     def ls_dir(self, partial):
         fake_path = self.fake_path(partial)
         path = self.path(partial, force_fake=False)
@@ -167,8 +176,11 @@ class LayerFS(Operations):
             ret = [ os.path.basename(i) for i in (real_files + fake_files) if os.path.exists(i) ]
             return list(set(ret))
 
-    # Filesystem methods
-    # ==================
+    ######################################################################
+    #                                                                    #
+    #                         Filesystem Methods                         #
+    #                                                                    #
+    ######################################################################
 
     def access(self, partial, mode):
         path = self.path(partial, force_fake=False)
@@ -241,8 +253,11 @@ class LayerFS(Operations):
         path = self.path(partial, force_fake=True)
         os.utime(path, times)
 
-    # File methods
-    # ============
+    ######################################################################
+    #                                                                    #
+    #                            File Methods                            #
+    #                                                                    #
+    ######################################################################
 
     def open(self, partial, flags):
         req_write = [ os.O_WRONLY, os.O_RDWR, os.O_CREAT, os.O_APPEND, os.O_TRUNC, os.O_EXCL ]
@@ -293,8 +308,7 @@ def layerFS(src, layer_storage, dst, **kwargs):
     layer_storage = os.path.realpath(layer_storage)
     if os.path.exists(layer_storage):
         assert os.path.isdir(layer_storage), layer_storage + ' exists and is not a directory'
-        # TODO: Remove, this is not needed. It just helps with debugging
-        assert not os.listdir(layer_storage), layer_storage + ' is not empty'
+    # Install the FUSE
     FUSE(LayerFS(src, layer_storage), dst, foreground=True, **kwargs)
 
 def parse_args(prog, *args):
@@ -306,8 +320,6 @@ def parse_args(prog, *args):
     return parser.parse_args(args)
 
 def main(argv):
-    # TODO: make this work for linux too. Only minor changes should be needed
-    assert platform.system() == 'Darwin', 'Only OSX is currently supported'
     ns = parse_args(*argv)
     return layerFS(**vars(ns))
 
