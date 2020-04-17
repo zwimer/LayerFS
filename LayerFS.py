@@ -46,7 +46,7 @@ class LayerFS(Operations):
         # Setup LayerFS
         self.fd_map_t = namedtuple('fd_map_t', ['fd', 'path', 'open_args'])
         self.shadow_file = self.join(layer_storage, 'shadow')
-        self.shadow = set()
+        self.load_shadow()
         self.fd_map = {}
         self.root = root
 
@@ -59,6 +59,15 @@ class LayerFS(Operations):
     ########################################
     #      Path Construction Functions     #
     ########################################
+
+    # Load shadow from a file
+    def load_shadow(self):
+        if not os.path.exists(self.shadow_file):
+            self.shadow = set()
+        else:
+            with open(self.shadow_file) as f:
+                data = f.read()
+            self.shadow = set([ i for i in data.split('\n') if len(i) > 0 ])
 
     # Never end in slash
     @staticmethod
