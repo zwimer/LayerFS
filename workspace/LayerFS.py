@@ -35,7 +35,8 @@ ll = 0
 
 # The class that handles all FS / File operations
 class LayerFS(Operations):
-    def __init__(self, root, layer_storage):
+    def __init__(self, root, layer_storage,
+            allow_hardlinks, allow_cd_symlinks):
         # Cleanup
         layer_storage = os.path.normpath(layer_storage)
         root = os.path.normpath(root)
@@ -44,6 +45,8 @@ class LayerFS(Operations):
         self.fake_root = self.join(layer_storage, 'fake_root')
         Path(self.fake_root).mkdir(parents=True, exist_ok=True)
         # Setup LayerFS
+        self.allow_hardlinks = allow_hardlinks
+        self.allow_cd_symlinks = allow_cd_symlinks
         self.fd_map_t = namedtuple('fd_map_t', ['fd', 'path', 'open_args'])
         self.shadow_file = self.join(layer_storage, 'shadow')
         self.load_shadow()
@@ -215,6 +218,7 @@ class LayerFS(Operations):
         for i in ([ '.', '..' ] + dirents):
             yield i
 
+    # TODO: read internal links, not eternal links
     def readlink(self, path):
         raise FuseOSError(errno.EMLINK)
 
@@ -245,7 +249,8 @@ class LayerFS(Operations):
         path = self.path(partial, force_fake=True)
         os.unlink(path)
 
-    def symlink(self, name, target):
+    # TODO: allow for internal- for external depends on __init__ args
+    def symlink(self, dst, src):
         raise FuseOSError(errno.EMLINK)
 
     # TODO: parent permissions x2
@@ -254,8 +259,11 @@ class LayerFS(Operations):
         new = self.path(partial_new, force_fake=True)
         os.rename(old, new)
 
-    def link(self, target, name):
-        raise FuseOSError(errno.EMLINK)
+    def link(self, dst_partial, src_partial):
+        if self.allow_hardlinks:
+            src = self.path(src_partial, force_fake=True)
+            dst = self.path(dst_partial, force_fake=True)
+            os.link(src, dst)
 
     # TODO: parent permissions
     def utimens(self, partial, times=None):
@@ -309,7 +317,7 @@ class LayerFS(Operations):
         os.fsync(fd)
 
 
-def layerFS(src, layer_storage, dst, **kwargs):
+def layerFS(src, layer_storage, mountpoint, fuse_args, **layerfs_args):
     # Argument verification
     src = os.path.realpath(src)
     assert os.path.exists(src), src + ' does not exist'
@@ -318,19 +326,40 @@ def layerFS(src, layer_storage, dst, **kwargs):
     if os.path.exists(layer_storage):
         assert os.path.isdir(layer_storage), layer_storage + ' exists and is not a directory'
     # Install the FUSE
-    FUSE(LayerFS(src, layer_storage), dst, foreground=True, **kwargs)
+    FUSE(LayerFS(src, layer_storage, **layerfs_args), mountpoint, **fuse_args)
 
 def parse_args(prog, *args):
     parser = argparse.ArgumentParser(prog=os.path.basename(prog))
-    parser.add_argument('src')
-    parser.add_argument('layer_storage')
-    parser.add_argument('dst')
-    parser.add_argument('--debug', action='store_true', default=False)
-    return parser.parse_args(args)
+    # Positional args
+    parser.add_argument('src', help='The root of what LayerFS should layer')
+    parser.add_argument('layer_storage', help='A directory LayerFS can store it\'s filesystem diffs')
+    parser.add_argument('mountpoint', help='Where to mount the LayerFS')
+    # Optional args
+    parser.add_argument('--allow_hardlinks', action='store_true', default=False, help='Allow hardlinks')
+    parser.add_argument('--allow_cd_symlinks', action='store_true', default=False,
+        help='Allow cross-device symlinks between LayerFS' + \
+             ' and other filesystems such as the host filesystem')
+    # Fuse args
+    fuse = parser.add_argument_group('optional fuse arguments')
+    fuse.add_argument('--allow_other', action='store_true', default=False,
+        help='This option overrides the security measure restricting file access to ' + \
+             'the filesystem owner, so that all users (including root) can access the files.')
+    fuse.add_argument('--foreground', action='store_true', default=False,
+        help='Keep the script alive.')
+    fuse.add_argument('--nothreads', action='store_true', default=False,
+        help='Promise that only one thread will ever use the json FS')
+    fuse.add_argument('--debug', action='store_true', default=False,
+        help='Show every interaction with the json FS')
+    # Parse args
+    args = vars(parser.parse_args(args))
+    fuse_keys = [ i.dest for i in fuse._group_actions ]
+    fuse_args = { i:args[i] for i in fuse_keys }
+    main_args = { i:k for i,k in args.items() if i not in fuse_keys }
+    return main_args, fuse_args
 
 def main(argv):
-    ns = parse_args(*argv)
-    return layerFS(**vars(ns))
+    main_args, fuse_args = parse_args(*argv)
+    return layerFS(**main_args, fuse_args=fuse_args)
 
 
 # Don't run on import
