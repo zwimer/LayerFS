@@ -317,11 +317,18 @@ def layerFS(src, layer_storage, mountpoint, fuse_args, **layerfs_args):
     # Argument verification
     src = os.path.realpath(src)
     mountpoint = os.path.abspath(mountpoint)
-    assert os.path.exists(src), src + ' does not exist'
-    assert os.path.isdir(src), src + ' is not a directory'
     layer_storage = os.path.realpath(layer_storage)
-    if os.path.exists(layer_storage):
-        assert os.path.isdir(layer_storage), layer_storage + ' exists and is not a directory'
+    try:
+        assert len(set([src, layer_storage, os.path.realpath(mountpoint)])) == 3, \
+            'src, layer_storage, and mountpoint cannot be the same'
+        assert src != os.path.realpath(mountpoint), 'src and mountpoint cannot be the same'
+        assert os.path.exists(src), src + ' does not exist'
+        assert os.path.isdir(src), src + ' is not a directory'
+        if os.path.exists(layer_storage):
+            assert os.path.isdir(layer_storage), layer_storage + ' exists and is not a directory'
+    except AssertionError as e:
+        print('Error: ' + str(e))
+        sys.exit(1)
     # Install the FUSE
     FUSE(LayerFS(src, layer_storage, mountpoint, **layerfs_args), mountpoint, **fuse_args)
 
