@@ -217,13 +217,11 @@ class LayerFS(Operations):
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                 'st_mtime', 'st_uid', 'st_gid', 'st_mode', 'st_size', 'st_nlink'))
 
-    @debug_member
     def readdir(self, partial, fh):
         dirents = self.ls_dir(partial)
         for i in ([ '.', '..' ] + dirents):
             yield i
 
-    @debug_member
     def readlink(self, partial):
         path = self.path(partial, force_fake=False)
         ret = os.path.normpath(os.readlink(path))
@@ -260,7 +258,6 @@ class LayerFS(Operations):
             'f_frsize', 'f_namemax'))
 
     # TODO: parent permissions
-    @debug_member
     def unlink(self, partial):
         path = self.path(partial, force_fake=True)
         os.unlink(path)
@@ -273,7 +270,6 @@ class LayerFS(Operations):
         os.symlink(src, self.path(dst_partial, force_fake=True))
 
     # TODO: parent permissions x2
-    @debug_member
     def rename(self, partial_old, partial_new):
         old = self.path(partial_old, force_fake=True)
         new = self.path(partial_new, force_fake=True)
@@ -351,6 +347,7 @@ def layerFS(src, layer_storage, mountpoint, fuse_args, **layerfs_args):
     FUSE(LayerFS(src, layer_storage, mountpoint, **layerfs_args), mountpoint, **fuse_args)
 
 def parse_args(prog, *args):
+    osx = 'Darwin' == platform.system()
     parser = argparse.ArgumentParser(prog=os.path.basename(prog))
     # Positional args
     parser.add_argument('src', help='The root of what LayerFS should layer')
@@ -372,8 +369,14 @@ def parse_args(prog, *args):
         help='Promise that only one thread will ever use the json FS')
     fuse.add_argument('--debug', action='store_true', default=False,
         help='Show every interaction with the json FS')
+    if osx:
+        fuse.add_argument('--volname', action='store', default=None,
+            help='Mac volume name. Default = <mountpoint>')
     # Parse args
     args = vars(parser.parse_args(args))
+    if osx:
+        if args['volname'] is None:
+            args['volname'] = args['mountpoint']
     fuse_keys = [ i.dest for i in fuse._group_actions ]
     fuse_args = { i:args[i] for i in fuse_keys }
     main_args = { i:k for i,k in args.items() if i not in fuse_keys }
