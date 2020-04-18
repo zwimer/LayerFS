@@ -6,3 +6,7 @@ Imagine a cross-platform FUSE implementation of overlayfs that also has the abil
 
 `fuse`
 `python3.8`
+
+# Sub-mounts
+
+Mounting a filesystem within a LayerFS and creating a symlink from the LayerFS to the new filesystem will lead to undefined behavior.

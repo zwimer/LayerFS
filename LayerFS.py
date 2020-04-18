@@ -1,8 +1,8 @@
 #!/usr/bin/env python3.8
 
+import subprocess
 import argparse
 import platform
-import dbm
 import shutil
 import errno
 import sys
@@ -16,16 +16,15 @@ from fuse import FUSE, FuseOSError, Operations
 # TODO: Long term things:
 #       1. thread safe
 #       2. optimize by only storing top level in shadow
-#       3. Allow links
-
+#       3. Relative symlinks are treated as cross-device symlinks
 
 # A decorator used for debugging
 def debug_member(f):
     def real(*args, **kwargs):
-        global ll; ll += 1
-        print('  '*ll + 'Invoked ' + f.__name__ + ':', args[1:], kwargs)
+        global ll
+        print('  '*ll + 'Invoked ' + f.__name__ + ':', args[1:], kwargs); ll += 1
         try: ret = f(*args,  **kwargs)
-        except Exception as e: pnt('Exception: ' + str(e)); raise
+        except Exception as e: print('Exception: ' + str(e)); raise
         finally: ll -= 1
         print('  '*ll+'Returned: ' + ('\n' if ll==0 else ''), ret)
         return ret
@@ -35,7 +34,7 @@ ll = 0
 
 # The class that handles all FS / File operations
 class LayerFS(Operations):
-    def __init__(self, root, layer_storage,
+    def __init__(self, root, layer_storage, mountpoint,
             allow_hardlinks, allow_cd_symlinks):
         # Cleanup
         layer_storage = os.path.normpath(layer_storage)
@@ -49,6 +48,7 @@ class LayerFS(Operations):
         self.allow_cd_symlinks = allow_cd_symlinks
         self.fd_map_t = namedtuple('fd_map_t', ['fd', 'path', 'open_args'])
         self.shadow_file = self.join(layer_storage, 'shadow')
+        self.mountpoint = mountpoint
         self.load_shadow()
         self.fd_map = {}
         self.root = root
@@ -119,6 +119,9 @@ class LayerFS(Operations):
         prepend = d[len(self.root):]
         return [ i for i in children if self.test_use_fake(self.join(prepend, i)) ]
 
+    def copy_file(self, *args):
+        return shutil.copy2(*args, follow_symlinks=False)
+
     # Returns path to use following these rules
     # force_fake will copy over real files if needed
     # Note: ancestors are not promised to have the proper permissions
@@ -128,11 +131,12 @@ class LayerFS(Operations):
             path = self.fake_path(partial)
             Path(os.path.dirname(path)).mkdir(parents=True, exist_ok=True)
             real_path = self.real_path(partial)
-            if os.path.exists(real_path):
-                if os.path.isdir(real_path):
-                    shutil.copytree(real_path, path, ignore=self.ignore_fake, dirs_exist_ok=True)
+            if os.path.lexists(real_path):
+                if os.path.isdir(real_path) and not os.path.islink(real_path):
+                    shutil.copytree(real_path, path, copy_function=self.copy_file,
+                                    ignore=self.ignore_fake, dirs_exist_ok=True)
                 else:
-                    shutil.copy2(real_path, path)
+                    self.copy_file(real_path, path)
             self.add_to_shadow(partial)
             return path
         return self.fake_path(partial) if use_fake else self.real_path(partial)
@@ -185,7 +189,7 @@ class LayerFS(Operations):
             real_files = [ self.path(i, force_fake=False) for i in real_partials ]
             fake_files = [ self.fake_path(i) for i in self.shadow if os.path.dirname(i) == partial ]
             # Merge and return the ones that should exist
-            ret = [ os.path.basename(i) for i in (real_files + fake_files) if os.path.exists(i) ]
+            ret = [ os.path.basename(i) for i in (real_files + fake_files) if os.path.lexists(i) ]
             return list(set(ret))
 
     ######################################################################
@@ -213,14 +217,25 @@ class LayerFS(Operations):
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                 'st_mtime', 'st_uid', 'st_gid', 'st_mode', 'st_size', 'st_nlink'))
 
+    @debug_member
     def readdir(self, partial, fh):
         dirents = self.ls_dir(partial)
         for i in ([ '.', '..' ] + dirents):
             yield i
 
-    # TODO: read internal links, not eternal links
-    def readlink(self, path):
-        raise FuseOSError(errno.EMLINK)
+    @debug_member
+    def readlink(self, partial):
+        path = self.path(partial, force_fake=False)
+        ret = os.path.normpath(os.readlink(path))
+        # Adjust link
+        if ret.startswith(self.root):
+            ret = ret.replace(self.root, self.mountpoint, 1)
+        elif ret.startswith(self.fake_root):
+            ret = ret.replace(self.fake_root, self.mountpoint, 1)
+        # Ensure no cross-device links or relative links
+        if not ret.startswith(self.mountpoint) or not ret.startswith('/'):
+            self.fassert(self.allow_cd_symlinks, errno.EXDEV)
+        return ret
 
     # TODO: parent permissions
     def mknod(self, partial, mode, dev):
@@ -245,20 +260,26 @@ class LayerFS(Operations):
             'f_frsize', 'f_namemax'))
 
     # TODO: parent permissions
+    @debug_member
     def unlink(self, partial):
         path = self.path(partial, force_fake=True)
         os.unlink(path)
 
-    # TODO: allow for internal- for external depends on __init__ args
-    def symlink(self, dst, src):
-        raise FuseOSError(errno.EMLINK)
+    # TODO: parent permissions
+    def symlink(self, dst_partial, src):
+        src = os.path.normpath(src)
+        same_vol = src.startswith(self.mountpoint) and src.startswith('/')
+        self.fassert(same_vol or self.allow_cd_symlinks, errno.EXDEV)
+        os.symlink(src, self.path(dst_partial, force_fake=True))
 
     # TODO: parent permissions x2
+    @debug_member
     def rename(self, partial_old, partial_new):
         old = self.path(partial_old, force_fake=True)
         new = self.path(partial_new, force_fake=True)
         os.rename(old, new)
 
+    # TODO: parent permissions
     def link(self, dst_partial, src_partial):
         if self.allow_hardlinks:
             src = self.path(src_partial, force_fake=True)
@@ -320,13 +341,14 @@ class LayerFS(Operations):
 def layerFS(src, layer_storage, mountpoint, fuse_args, **layerfs_args):
     # Argument verification
     src = os.path.realpath(src)
+    mountpoint = os.path.abspath(mountpoint)
     assert os.path.exists(src), src + ' does not exist'
     assert os.path.isdir(src), src + ' is not a directory'
     layer_storage = os.path.realpath(layer_storage)
     if os.path.exists(layer_storage):
         assert os.path.isdir(layer_storage), layer_storage + ' exists and is not a directory'
     # Install the FUSE
-    FUSE(LayerFS(src, layer_storage, **layerfs_args), mountpoint, **fuse_args)
+    FUSE(LayerFS(src, layer_storage, mountpoint, **layerfs_args), mountpoint, **fuse_args)
 
 def parse_args(prog, *args):
     parser = argparse.ArgumentParser(prog=os.path.basename(prog))
