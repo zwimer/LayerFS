@@ -12,25 +12,12 @@ from pathlib import Path
 from collections import namedtuple
 from fuse import FUSE, FuseOSError, Operations
 
-
+# TODO: parent permissions for:
+#	 mknod, rmdir, mkdir, unlink, symlink, rename (x2), link, utimens
 # TODO: Long term things:
 #       1. thread safe
 #       2. optimize by only storing top level in shadow
 #       3. Relative symlinks are treated as cross-device symlinks
-
-# A decorator used for debugging
-def debug_member(f):
-    def real(*args, **kwargs):
-        global ll
-        print('  '*ll + 'Invoked ' + f.__name__ + ':', args[1:], kwargs); ll += 1
-        try: ret = f(*args,  **kwargs)
-        except Exception as e: print('Exception: ' + str(e)); raise
-        finally: ll -= 1
-        print('  '*ll+'Returned: ' + ('\n' if ll==0 else ''), ret)
-        return ret
-    return real
-ll = 0
-
 
 # The class that handles all FS / File operations
 class LayerFS(Operations):
@@ -213,7 +200,7 @@ class LayerFS(Operations):
     def getattr(self, partial, fh=None):
         path = self.path(partial, force_fake=False)
         st = os.lstat(path)
-        # TODO: adjust these
+        # TODO: fix these
         return dict((key, getattr(st, key)) for key in ('st_atime', 'st_ctime',
                 'st_mtime', 'st_uid', 'st_gid', 'st_mode', 'st_size', 'st_nlink'))
 
@@ -235,17 +222,14 @@ class LayerFS(Operations):
             self.fassert(self.allow_cd_symlinks, errno.EXDEV)
         return ret
 
-    # TODO: parent permissions
     def mknod(self, partial, mode, dev):
         path = self.path(partial, force_fake=True)
         os.mknod(path, mode, dev)
 
-    # TODO: parent permissions
     def rmdir(self, partial):
         path = self.path(partial, force_fake=True)
         os.rmdir(path)
 
-    # TODO: parent permissions
     def mkdir(self, partial, mode):
         path = self.path(partial, force_fake=True)
         os.mkdir(path, mode)
@@ -257,32 +241,27 @@ class LayerFS(Operations):
             'f_blocks', 'f_bsize', 'f_favail', 'f_ffree', 'f_files', 'f_flag',
             'f_frsize', 'f_namemax'))
 
-    # TODO: parent permissions
     def unlink(self, partial):
         path = self.path(partial, force_fake=True)
         os.unlink(path)
 
-    # TODO: parent permissions
     def symlink(self, dst_partial, src):
         src = os.path.normpath(src)
         same_vol = src.startswith(self.mountpoint) and src.startswith('/')
         self.fassert(same_vol or self.allow_cd_symlinks, errno.EXDEV)
         os.symlink(src, self.path(dst_partial, force_fake=True))
 
-    # TODO: parent permissions x2
     def rename(self, partial_old, partial_new):
         old = self.path(partial_old, force_fake=True)
         new = self.path(partial_new, force_fake=True)
         os.rename(old, new)
 
-    # TODO: parent permissions
     def link(self, dst_partial, src_partial):
         if self.allow_hardlinks:
             src = self.path(src_partial, force_fake=True)
             dst = self.path(dst_partial, force_fake=True)
             os.link(src, dst)
 
-    # TODO: parent permissions
     def utimens(self, partial, times=None):
         path = self.path(partial, force_fake=True)
         os.utime(path, times)
