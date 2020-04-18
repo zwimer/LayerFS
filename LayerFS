@@ -23,10 +23,8 @@ from fuse import FUSE, FuseOSError, Operations
 class LayerFS(Operations):
     def __init__(self, root, layer_storage, mountpoint,
             allow_hardlinks, allow_cd_symlinks):
-        # Cleanup
-        layer_storage = os.path.normpath(layer_storage)
-        root = os.path.normpath(root)
         # Make directories
+        layer_storage = os.path.normpath(layer_storage)
         Path(layer_storage).mkdir(parents=False, exist_ok=True)
         self.fake_root = self.join(layer_storage, 'fake_root')
         Path(self.fake_root).mkdir(parents=True, exist_ok=True)
@@ -35,10 +33,10 @@ class LayerFS(Operations):
         self.allow_cd_symlinks = allow_cd_symlinks
         self.fd_map_t = namedtuple('fd_map_t', ['fd', 'path', 'open_args'])
         self.shadow_file = self.join(layer_storage, 'shadow')
+        self.root = os.path.normpath(root)
         self.mountpoint = mountpoint
         self.load_shadow()
         self.fd_map = {}
-        self.root = root
 
     ######################################################################
     #                                                                    #
@@ -64,10 +62,8 @@ class LayerFS(Operations):
     def join(a_root, tail):
         while tail.startswith('/'):
             tail = tail[1:]
-        ret = os.path.join(a_root, tail)
-        while ret.endswith('/'):
-            ret = ret[:-1]
-        return ret
+        joined = os.path.join(a_root, tail)
+        return os.path.normpath(joined)
 
     # Never end in slash
     def real_path(self, partial):
@@ -213,10 +209,11 @@ class LayerFS(Operations):
         path = self.path(partial, force_fake=False)
         ret = os.path.normpath(os.readlink(path))
         # Adjust link
+        # Below we do not use ret.replace in case self.root == '/'
         if ret.startswith(self.root):
-            ret = ret.replace(self.root, self.mountpoint, 1)
+            ret = self.join(self.mountpoint, ret[len(self.root):])
         elif ret.startswith(self.fake_root):
-            ret = ret.replace(self.fake_root, self.mountpoint, 1)
+            ret = self.join(self.mountpoint, ret[len(self.fake_root):])
         # Ensure no cross-device links or relative links
         if not ret.startswith(self.mountpoint) or not ret.startswith('/'):
             self.fassert(self.allow_cd_symlinks, errno.EXDEV)
@@ -313,15 +310,17 @@ class LayerFS(Operations):
         os.fsync(fd)
 
 
-def layerFS(src, layer_storage, mountpoint, fuse_args, **layerfs_args):
+def layerFS(src, layer_storage, mountpoint, fuse_args, allow_ls_in_src, **layerfs_args):
     # Argument verification
     src = os.path.realpath(src)
     mountpoint = os.path.abspath(mountpoint)
     layer_storage = os.path.realpath(layer_storage)
     try:
+        if not allow_ls_in_src:
+            assert not layer_storage.startswith(src), \
+                'layer_storage cannot be within src without the --allow_ls_in_src flag'
         assert len(set([src, layer_storage, os.path.realpath(mountpoint)])) == 3, \
             'src, layer_storage, and mountpoint cannot be the same'
-        assert src != os.path.realpath(mountpoint), 'src and mountpoint cannot be the same'
         assert os.path.exists(src), src + ' does not exist'
         assert os.path.isdir(src), src + ' is not a directory'
         if os.path.exists(layer_storage):
@@ -341,6 +340,8 @@ def parse_args(prog, *args):
     parser.add_argument('mountpoint', help='Where to mount the LayerFS')
     # Optional args
     parser.add_argument('--allow_hardlinks', action='store_true', default=False, help='Allow hardlinks')
+    parser.add_argument('--allow_ls_in_src', action='store_true', default=False,
+        help='Allow persist to be within src')
     parser.add_argument('--allow_cd_symlinks', action='store_true', default=False,
         help='Allow cross-device symlinks between LayerFS' + \
              ' and other filesystems such as the host filesystem')
