@@ -284,6 +284,7 @@ class LayerFS(Operations):
     def read(self, partial, length, offset, fh):
         path = self.path(partial, force_fake=False)
         fd = self.real_fd(fh, path)
+        os.lseek(fd, offset, os.SEEK_SET)
         return os.read(fd, length)
 
     def write(self, partial, buf, offset, fh):
